@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>シンプルアラーム</title>
+<style>
+  body{font-family:system-ui, -apple-system, "Segoe UI", Roboto;max-width:720px;margin:40px auto;padding:20px}
+  h1{font-size:1.25rem;margin-bottom:0.5rem}
+  .row{display:flex;gap:.5rem;align-items:center;margin-bottom:.6rem;flex-wrap:wrap}
+  input[type=time]{padding:.4rem;border:1px solid #ccc;border-radius:6px}
+  button{padding:.45rem .75rem;border-radius:8px;border:1px solid #bbb;background:#f6f6f6;cursor:pointer}
+  .big{font-size:1.05rem}
+  .status{margin-top:1rem;padding:10px;border-radius:8px;background:#f9f9f9;border:1px solid #eee}
+  label{font-size:.9rem}
+  input[type=range]{width:160px}
+</style>
+</head>
+<body>
+<h1>アラーム設定</h1>
+<div class="row">
+  <label for="time">時刻</label>
+  <input id="time" type="time" class="big" />
+  <label for="ampm">明日ならチェック</label>
+  <input id="tomorrow" type="checkbox" title="チェックすると選んだ時刻を翌日に設定します" />
+</div>
+
+<div class="row">
+  <label for="soundSelect">内蔵音</label>
+  <select id="soundSelect">
+    <option value="beep">ビープ音</option>
+    <option value="melody">短いメロディ</option>
+  </select>
+  <label for="upload">またはファイル</label>
+  <input id="upload" type="file" accept="audio/*" />
+  <button id="preview">プレビュー</button>
+</div>
+
+<div class="row">
+  <label for="volume">音量</label>
+  <input id="volume" type="range" min="0" max="1" step="0.01" value="0.9" />
+  <span id="volLabel">0.90</span>
+</div>
+
+<div class="row">
+  <button id="set">セット</button>
+  <button id="cancel">キャンセル</button>
+  <button id="snooze">スヌーズ（5分）</button>
+  <button id="stop">停止</button>
+</div>
+
+<div class="status">
+  <div>状態: <span id="state">オフ</span></div>
+  <div>次のアラーム: <span id="next">—</span></div>
+  <div>残り: <span id="remaining">—</span></div>
+</div>
+
+<script>
+(function(){
+  var audio=null, audioUrl=null, timeoutId=null, countdownId=null, isRinging=false, oscillator=null, audioCtx=null, gainNode=null;
+  var elTime=document.getElementById("time"), elTomorrow=document.getElementById("tomorrow"), elSound=document.getElementById("soundSelect"), elUpload=document.getElementById("upload");
+  var elPreview=document.getElementById("preview"), elVolume=document.getElementById("volume"), elVolLabel=document.getElementById("volLabel");
+  var elSet=document.getElementById("set"), elCancel=document.getElementById("cancel"), elSnooze=document.getElementById("snooze"), elStop=document.getElementById("stop");
+  var elState=document.getElementById("state"), elNext=document.getElementById("next"), elRemaining=document.getElementById("remaining");
+
+  function formatDate(d){ return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0")+" "+String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0")+":"+String(d.getSeconds()).padStart(2,"0"); }
+  function setState(s){ elState.textContent=s; }
+
+  function createAudioFromFile(file){
+    if(audio){ stopAudio(); URL.revokeObjectURL(audioUrl); audio=null; }
+    audioUrl=URL.createObjectURL(file);
+    audio=new Audio(audioUrl);
+    audio.loop=true;
+    audio.volume=Number(elVolume.value);
+  }
+
+  function startWebBeep(kind){
+    if(!audioCtx){ audioCtx=new (window.AudioContext || window.webkitAudioContext)(); gainNode=audioCtx.createGain(); gainNode.connect(audioCtx.destination); }
+    gainNode.gain.value=Number(elVolume.value);
+    oscillator=audioCtx.createOscillator();
+    oscillator.connect(gainNode);
+    if(kind==="melody"){
+      var now=audioCtx.currentTime;
+      var notes=[523.25,659.25,783.99,659.25];
+      var i=0;
+      oscillator.frequency.setValueAtTime(notes[0],now);
+      oscillator.start(now);
+      var t=0;
+      notes.forEach(function(f){
+        oscillator.frequency.linearRampToValueAtTime(f, audioCtx.currentTime + t + 0.12);
+        t += 0.12;
+      });
+    } else {
+      oscillator.type="sine";
+      oscillator.frequency.value=880;
+      oscillator.start();
+    }
+    isRinging=true;
+  }
+
+  function stopWebBeep(){
+    if(oscillator){ try{ oscillator.stop(); }catch(e){} oscillator.disconnect(); oscillator=null; }
+    isRinging=false;
+  }
+
+  function playSoundPreview(){
+    if(elUpload.files && elUpload.files.length>0){
+      createAudioFromFile(elUpload.files[0]);
+      audio.play();
+      setTimeout(function(){ if(audio) audio.pause(); },3000);
+    } else {
+      if(audioCtx && oscillator){ stopWebBeep(); }
+      startWebBeep(elSound.value);
+      setTimeout(stopWebBeep,1500);
+    }
+  }
+
+  function stopAudio(){
+    if(audio){ try{ audio.pause(); audio.currentTime=0; }catch(e){} URL.revokeObjectURL(audioUrl); audio=null; audioUrl=null; }
+    if(audioCtx) stopWebBeep();
+    isRinging=false;
+  }
+
+  function triggerAlarm(){
+    setState("鳴動中");
+    elNext.textContent="今";
+    if(elUpload.files && elUpload.files.length>0){
+      createAudioFromFile(elUpload.files[0]);
+      audio.volume=Number(elVolume.value);
+      audio.play().catch(function(){});
+    } else {
+      startWebBeep(elSound.value);
+    }
+    isRinging=true;
+  }
+
+  function scheduleFor(date){
+    clearTimeout(timeoutId);
+    timeoutId=setTimeout(function(){
+      triggerAlarm();
+    }, Math.max(0, date.getTime() - Date.now()));
+    elNext.textContent=formatDate(date);
+    setState("セット済み");
+    startCountdown(date);
+  }
+
+  function parseTimeAndSchedule(){
+    var t=elTime.value;
+    if(!t){ alert("時刻を選んでください"); return; }
+    var parts=t.split(":");
+    var h=parseInt(parts[0],10), m=parseInt(parts[1],10);
+    var now=new Date();
+    var d=new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m, 0, 0);
+    if(elTomorrow.checked || d.getTime() <= Date.now()) d.setDate(d.getDate()+1);
+    scheduleFor(d);
+  }
+
+  function startCountdown(target){
+    clearInterval(countdownId);
+    countdownId=setInterval(function(){
+      var diff=target.getTime()-Date.now();
+      if(diff<=0){ elRemaining.textContent="00:00:00"; clearInterval(countdownId); return; }
+      var s=Math.floor(diff/1000);
+      var hh=Math.floor(s/3600); s%=3600;
+      var mm=Math.floor(s/60); var ss=s%60;
+      elRemaining.textContent=String(hh).padStart(2,"0")+":"+String(mm).padStart(2,"0")+":"+String(ss).padStart(2,"0");
+    },250);
+  }
+
+  elPreview.addEventListener("click", function(){ playSoundPreview(); });
+  elVolume.addEventListener("input", function(){ elVolLabel.textContent=Number(elVolume.value).toFixed(2); if(audio) audio.volume=Number(elVolume.value); if(gainNode) gainNode.gain.value=Number(elVolume.value); });
+  elSet.addEventListener("click", function(){ parseTimeAndSchedule(); });
+  elCancel.addEventListener("click", function(){ clearTimeout(timeoutId); clearInterval(countdownId); timeoutId=null; setState("オフ"); elNext.textContent="—"; elRemaining.textContent="—"; });
+  elSnooze.addEventListener("click", function(){
+    if(!isRinging){ alert("鳴動中に使用してください"); return; }
+    stopAudio();
+    var d=new Date(Date.now()+5*60*1000);
+    scheduleFor(d);
+  });
+  elStop.addEventListener("click", function(){ stopAudio(); setState("オフ"); elNext.textContent="—"; elRemaining.textContent="—"; clearTimeout(timeoutId); clearInterval(countdownId); });
+  elUpload.addEventListener("change", function(){
+    if(elUpload.files && elUpload.files.length>0){ elSound.value="file"; }
+  });
+
+  window.addEventListener("visibilitychange", function(){ if(document.visibilityState==="visible" && isRinging && audio && audio.paused){ audio.play().catch(function(){}); } });
+
+  if(!elTime.value){
+    var n=new Date(); n.setMinutes(n.getMinutes()+1); elTime.value=String(n.getHours()).padStart(2,"0")+":"+String(n.getMinutes()).padStart(2,"0");
+  }
+})();
+</script>
+</body>
+</html>
